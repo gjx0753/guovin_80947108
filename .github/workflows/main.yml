@@ -2,12 +2,17 @@ name: 'Update schedule'
 
 on:
   schedule:
-    - cron: '0 22,10 * * *'
+    - cron: '0 22,10 * * *'  # 每天 UTC 22:00 和 10:00 执行（北京时间 06:00 和 18:00）
   workflow_dispatch:
     branches:
       - master
       - dev
       - gd
+
+# 👇 关键修复 1：添加内容写入权限，解决 Exit code 128
+permissions:
+  contents: write
+
 jobs:
   push:
     runs-on: ${{ matrix.operating-system }}
@@ -15,18 +20,27 @@ jobs:
       matrix:
         operating-system: [ 'ubuntu-latest' ]
     steps:
+      # 👇 设置分支名称（判断是否为原作者仓库）
       - name: Set branch name
         id: vars
         run: echo "BRANCH_NAME=${{ github.repository_owner == 'Guovin' && 'gd' || 'master' }}" >> $GITHUB_ENV
-      - uses: actions/checkout@v3
+
+      # 👇 关键修复 2：升级到 v4，添加 fetch-depth 和 token
+      - uses: actions/checkout@v4
         with:
           ref: ${{ env.BRANCH_NAME }}
+          token: ${{ secrets.GITHUB_TOKEN }}  # 确保使用有写权限的 token
+          fetch-depth: 0  # 获取完整历史记录，否则无法 push
+
+      # 👇 关键修复 3：升级到 v5
       - name: Run with setup-python 3.13
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.13'
           update-environment: true
           cache: 'pipenv'
+
+      # 检查是否需要启动 Chrome 浏览器
       - name: Check open_driver config
         id: check_driver
         run: |
@@ -37,31 +51,64 @@ jobs:
           except:
             open_driver = False
           print(open_driver)')" >> $GITHUB_ENV
+
+      # 安装 Chrome（如果需要）
       - name: Set up Chrome
         if: env.OPEN_DRIVER == 'True'
         uses: browser-actions/setup-chrome@latest
         with:
           chrome-version: stable
+
+      # 安装 ChromeDriver（如果需要）
       - name: Download chrome driver
         if: env.OPEN_DRIVER == 'True'
         uses: nanasess/setup-chromedriver@master
+
+      # 安装 FFmpeg（用于视频流处理）
       - name: Install FFmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      # 安装 pipenv
       - name: Install pipenv
         run: pip3 install --user pipenv
-      - name: Install dependecies
+
+      # 安装项目依赖
+      - name: Install dependencies
         run: pipenv --python 3.13 && pipenv install --deploy
+
+      # 安装 Selenium（如果需要）
       - name: Install selenium
         if: env.OPEN_DRIVER == 'True'
         run: pipenv install selenium
+
+      # 执行主更新程序
       - name: Update
         run: pipenv run dev
+
+      # 👇 关键修复 4：优化提交和推送逻辑
       - name: Commit and push if changed
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
+          
+          # 添加所有更改的文件
           git add .
+          
+          # 显示当前状态（调试用）
+          git status
+          
+          # 判断是否有变更
           if ! git diff --staged --quiet; then
+            # 显示当前分支（调试用）
+            echo "Current branch: $(git branch --show-current)"
+            
+            # 提交变更
             git commit -m "Github Action Auto Updated"
-            git push --force
+            
+            # 👇 关键修复 5：移除 --force，改用普通 push
+            # 设置 push.default 确保推送到当前分支
+            git config push.default current
+            git push
+          else
+            echo "✅ No changes to commit."
           fi
